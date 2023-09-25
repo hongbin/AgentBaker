@@ -89,6 +89,8 @@
 // linux/cloud-init/artifacts/teleportd.service
 // linux/cloud-init/artifacts/ubuntu/cse_helpers_ubuntu.sh
 // linux/cloud-init/artifacts/ubuntu/cse_install_ubuntu.sh
+// linux/cloud-init/artifacts/ubuntu/live-patching.service
+// linux/cloud-init/artifacts/ubuntu/ubuntu-live-patching.sh
 // linux/cloud-init/artifacts/update_certs.path
 // linux/cloud-init/artifacts/update_certs.service
 // linux/cloud-init/artifacts/update_certs.sh
@@ -2212,6 +2214,10 @@ EOF
     systemctlEnableAndStart kubelet || exit $ERR_KUBELET_START_FAIL
 }
 
+ensureLivePatching() {
+    systemctlEnableAndStart live-patching || exit $ERR_LIVE_PATCHING_START_FAIL
+}
+
 ensureMigPartition(){
     mkdir -p /etc/systemd/system/mig-partition.service.d/
     touch /etc/systemd/system/mig-partition.service.d/10-mig-profile.conf
@@ -2512,6 +2518,7 @@ ERR_DISABLE_SSH=172 # Error disabling ssh service
 
 ERR_VHD_REBOOT_REQUIRED=200 # Reserved for VHD reboot required exit condition
 ERR_NO_PACKAGES_FOUND=201 # Reserved for no security packages found exit condition
+ERR_LIVE_PATCHING_START_FAIL=202 # live-patching could not be started by systemctl
 
 ERR_SYSTEMCTL_MASK_FAIL=2 # Service could not be masked by systemctl
 
@@ -3519,6 +3526,10 @@ fi
 logs_to_events "AKS.CSE.ensureKubelet" ensureKubelet
 if [ "${ENSURE_NO_DUPE_PROMISCUOUS_BRIDGE}" == "true" ]; then
     logs_to_events "AKS.CSE.ensureNoDupOnPromiscuBridge" ensureNoDupOnPromiscuBridge
+fi
+
+if [[ $OS == $UBUNTU_OS_NAME ]]; then
+    logs_to_events "AKS.CSE.ubuntuLivePatching" ensureLivePatching
 fi
 
 if $FULL_INSTALL_REQUIRED; then
@@ -6448,6 +6459,26 @@ apt_get_dist_upgrade() {
   echo Executed apt-get dist-upgrade $i times
   wait_for_apt_locks
 }
+apt_get_upgrade() {
+  retries=10
+  apt_upgrade_output=/tmp/apt-get-upgrade.out
+  for i in $(seq 1 $retries); do
+    wait_for_apt_locks
+    export DEBIAN_FRONTEND=noninteractive
+    dpkg --configure -a --force-confdef
+    apt-get -f -y install
+    apt-mark showhold
+    ! (apt-get -o Dpkg::Options::="--force-confnew" upgrade -y 2>&1 | tee $apt_upgrade_output | grep -E "^([WE]:.*)|([eE]rr.*)$") && \
+    cat $apt_upgrade_output && break || \
+    cat $apt_upgrade_output
+    if [ $i -eq $retries ]; then
+      return 1
+    else sleep 5
+    fi
+  done
+  echo Executed apt-get upgrade $i times
+  wait_for_apt_locks
+}
 installDebPackageFromFile() {
     DEB_FILE=$1
     wait_for_apt_locks
@@ -6751,6 +6782,118 @@ func linuxCloudInitArtifactsUbuntuCse_install_ubuntuSh() (*asset, error) {
 	return a, nil
 }
 
+var _linuxCloudInitArtifactsUbuntuLivePatchingService = []byte(`[Unit]
+Description=Live Patching Service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Restart=always
+RestartSec=1800s
+ExecStart=/opt/azure/containers/ubuntu-live-patching.sh
+
+[Install]
+WantedBy=multi-user.target
+`)
+
+func linuxCloudInitArtifactsUbuntuLivePatchingServiceBytes() ([]byte, error) {
+	return _linuxCloudInitArtifactsUbuntuLivePatchingService, nil
+}
+
+func linuxCloudInitArtifactsUbuntuLivePatchingService() (*asset, error) {
+	bytes, err := linuxCloudInitArtifactsUbuntuLivePatchingServiceBytes()
+	if err != nil {
+		return nil, err
+	}
+
+	info := bindataFileInfo{name: "linux/cloud-init/artifacts/ubuntu/live-patching.service", size: 0, mode: os.FileMode(0), modTime: time.Unix(0, 0)}
+	a := &asset{bytes: bytes, info: info}
+	return a, nil
+}
+
+var _linuxCloudInitArtifactsUbuntuUbuntuLivePatchingSh = []byte(`#!/usr/bin/env bash
+
+set -o nounset
+set -o pipefail
+set -e
+
+# for apt_get_update and apt_get_upgrade
+source /opt/azure/containers/provision_source_distro.sh
+
+KUBECTL="/usr/local/bin/kubectl --kubeconfig /var/lib/kubelet/kubeconfig"
+
+source_list_path=/etc/apt/sources.list
+source_list_backup_path=/etc/apt/sources.list.backup
+
+node_name=$(hostname)
+if [ -z "${node_name}" ]; then
+    echo "cannot get node name"
+    exit 1
+fi
+
+# retrieve golden timestamp from node annotation
+golden_timestamp=$($KUBECTL get node ${node_name} -o jsonpath="{.metadata.annotations['kubernetes\.azure\.com/live-patching-golden-timestamp']}")
+if [ -z "${golden_timestamp}" ]; then
+    echo "golden timestamp is not set, skip live patching"
+    exit 0
+fi
+echo "golden timestamp is: ${golden_timestamp}"
+
+current_timestamp=$($KUBECTL get node ${node_name} -o jsonpath="{.metadata.annotations['kubernetes\.azure\.com/live-patching-current-timestamp']}")
+if [ -n "${current_timestamp}" ]; then
+    echo "current timestamp is: ${current_timestamp}"
+
+    if [[ "${golden_timestamp}" == "${current_timestamp}" ]]; then
+        echo "golden and current timestamp is the same, nothing to patch"
+        exit 0
+    fi
+fi
+
+old_source_list=$(cat ${source_list_path})
+# upgrade from base image to a timestamp
+# e.g. replace https://snapshot.ubuntu.com/ubuntu/ with https://snapshot.ubuntu.com/ubuntu/20230727T000000Z
+sed -i 's/http:\/\/azure.archive.ubuntu.com\/ubuntu\//https:\/\/snapshot.ubuntu.com\/ubuntu\/'"${golden_timestamp}"'/g' ${source_list_path}
+# upgrade from one timestamp to another timestamp
+sed -i 's/https:\/\/snapshot.ubuntu.com\/ubuntu\/\([0-9]\{8\}T[0-9]\{6\}Z\)/https:\/\/snapshot.ubuntu.com\/ubuntu\/'"${golden_timestamp}"'/g' ${source_list_path}
+
+new_source_list=$(cat ${source_list_path})
+if [[ "${old_source_list}" != "${new_source_list}" ]]; then
+    # save old sources.list
+	echo "$old_source_list" > ${source_list_backup_path}
+	echo "/etc/apt/sources.list is updated:"
+	diff ${source_list_backup_path} ${source_list_path} || true
+fi
+
+if ! apt_get_update; then
+    echo "apt_get_update failed"
+    exit 1
+fi
+if ! apt_get_upgrade; then
+    echo "apt_get_upgrade failed"
+    exit 1
+fi
+
+# update current timestamp
+$KUBECTL annotate --overwrite node ${node_name} kubernetes.azure.com/live-patching-current-timestamp=${golden_timestamp}
+
+echo live patching completed successfully
+`)
+
+func linuxCloudInitArtifactsUbuntuUbuntuLivePatchingShBytes() ([]byte, error) {
+	return _linuxCloudInitArtifactsUbuntuUbuntuLivePatchingSh, nil
+}
+
+func linuxCloudInitArtifactsUbuntuUbuntuLivePatchingSh() (*asset, error) {
+	bytes, err := linuxCloudInitArtifactsUbuntuUbuntuLivePatchingShBytes()
+	if err != nil {
+		return nil, err
+	}
+
+	info := bindataFileInfo{name: "linux/cloud-init/artifacts/ubuntu/ubuntu-live-patching.sh", size: 0, mode: os.FileMode(0), modTime: time.Unix(0, 0)}
+	a := &asset{bytes: bytes, info: info}
+	return a, nil
+}
+
 var _linuxCloudInitArtifactsUpdate_certsPath = []byte(`[Unit]
 Description=Monitor the cert directory for changes
 
@@ -6985,6 +7128,20 @@ write_files:
   owner: root
   content: !!binary |
     {{GetVariableProperty "cloudInitData" "migPartitionScript"}}
+
+- path: /opt/azure/containers/ubuntu-live-patching.sh
+  permissions: "0544"
+  encoding: gzip
+  owner: root
+  content: !!binary |
+    {{GetVariableProperty "cloudInitData" "livePatchingScript"}}
+
+- path: /etc/systemd/system/live-patching.service
+  permissions: "0644"
+  encoding: gzip
+  owner: root
+  content: !!binary |
+    {{GetVariableProperty "cloudInitData" "livePatchingService"}}
 
 - path: /opt/azure/containers/bind-mount.sh
   permissions: "0544"
@@ -8288,6 +8445,8 @@ var _bindata = map[string]func() (*asset, error){
 	"linux/cloud-init/artifacts/teleportd.service":                         linuxCloudInitArtifactsTeleportdService,
 	"linux/cloud-init/artifacts/ubuntu/cse_helpers_ubuntu.sh":              linuxCloudInitArtifactsUbuntuCse_helpers_ubuntuSh,
 	"linux/cloud-init/artifacts/ubuntu/cse_install_ubuntu.sh":              linuxCloudInitArtifactsUbuntuCse_install_ubuntuSh,
+	"linux/cloud-init/artifacts/ubuntu/live-patching.service":              linuxCloudInitArtifactsUbuntuLivePatchingService,
+	"linux/cloud-init/artifacts/ubuntu/ubuntu-live-patching.sh":            linuxCloudInitArtifactsUbuntuUbuntuLivePatchingSh,
 	"linux/cloud-init/artifacts/update_certs.path":                         linuxCloudInitArtifactsUpdate_certsPath,
 	"linux/cloud-init/artifacts/update_certs.service":                      linuxCloudInitArtifactsUpdate_certsService,
 	"linux/cloud-init/artifacts/update_certs.sh":                           linuxCloudInitArtifactsUpdate_certsSh,
@@ -8432,8 +8591,10 @@ var _bintree = &bintree{nil, map[string]*bintree{
 				"sysctl-d-60-CIS.conf":            &bintree{linuxCloudInitArtifactsSysctlD60CisConf, map[string]*bintree{}},
 				"teleportd.service":               &bintree{linuxCloudInitArtifactsTeleportdService, map[string]*bintree{}},
 				"ubuntu": &bintree{nil, map[string]*bintree{
-					"cse_helpers_ubuntu.sh": &bintree{linuxCloudInitArtifactsUbuntuCse_helpers_ubuntuSh, map[string]*bintree{}},
-					"cse_install_ubuntu.sh": &bintree{linuxCloudInitArtifactsUbuntuCse_install_ubuntuSh, map[string]*bintree{}},
+					"cse_helpers_ubuntu.sh":   &bintree{linuxCloudInitArtifactsUbuntuCse_helpers_ubuntuSh, map[string]*bintree{}},
+					"cse_install_ubuntu.sh":   &bintree{linuxCloudInitArtifactsUbuntuCse_install_ubuntuSh, map[string]*bintree{}},
+					"live-patching.service":   &bintree{linuxCloudInitArtifactsUbuntuLivePatchingService, map[string]*bintree{}},
+					"ubuntu-live-patching.sh": &bintree{linuxCloudInitArtifactsUbuntuUbuntuLivePatchingSh, map[string]*bintree{}},
 				}},
 				"update_certs.path":    &bintree{linuxCloudInitArtifactsUpdate_certsPath, map[string]*bintree{}},
 				"update_certs.service": &bintree{linuxCloudInitArtifactsUpdate_certsService, map[string]*bintree{}},
