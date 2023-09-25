@@ -225,6 +225,16 @@
     },
     {
       "type": "file",
+      "source": "parts/linux/cloud-init/artifacts/ubuntu/ubuntu-live-patching.sh",
+      "destination": "/home/packer/ubuntu-live-patching.sh"
+    },
+    {
+      "type": "file",
+      "source": "parts/linux/cloud-init/artifacts/ubuntu/live-patching.service",
+      "destination": "/home/packer/live-patching.service"
+    },
+    {
+      "type": "file",
       "source": "parts/linux/cloud-init/artifacts/cis.sh",
       "destination": "/home/packer/cis.sh"
     },

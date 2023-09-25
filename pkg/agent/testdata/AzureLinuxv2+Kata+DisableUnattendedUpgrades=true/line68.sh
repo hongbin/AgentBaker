@@ -457,6 +457,10 @@ EOF
     systemctlEnableAndStart kubelet || exit $ERR_KUBELET_START_FAIL
 }
 
+ensureLivePatching() {
+    systemctlEnableAndStart live-patching || exit $ERR_SYSTEMCTL_START_FAIL
+}
+
 ensureMigPartition(){
     mkdir -p /etc/systemd/system/mig-partition.service.d/
     touch /etc/systemd/system/mig-partition.service.d/10-mig-profile.conf
