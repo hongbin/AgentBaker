@@ -93,12 +93,41 @@ apt_get_dist_upgrade() {
   echo Executed apt-get dist-upgrade $i times
   wait_for_apt_locks
 }
+unattended_upgrade() {
+  retries=10
+  for i in $(seq 1 $retries); do
+    unattended-upgrade -v && break
+    if [ $i -eq $retries ]; then
+      return 1
+    else sleep 5
+    fi
+  done
+  echo Executed unattended upgrade $i times
+}
 installDebPackageFromFile() {
     DEB_FILE=$1
     wait_for_apt_locks
     retrycmd_if_failure 10 5 600 apt-get -y -f install ${DEB_FILE} --allow-downgrades
     if [[ $? -ne 0 ]]; then
         return 1
+    fi
+}
+# Determinate is the given option present in the cfg file
+cfg_has_option() {
+    file=$1
+    option=$2
+    line=$(sed -n "/^$option:/ p" "$file")
+    [ -n "$line" ]
+}
+# Set an option in a cfg file
+cfg_set_option() {
+    file=$1
+    option=$2
+    value=$3
+    if ! cfg_has_option "$file" "$option"; then
+        echo "$option: $value" >> "$file"
+    else
+        sed -i 's/'"$option"':.*$/'"$option: $value"'/g' "$file"
     fi
 }
 #EOF

@@ -105,6 +105,10 @@ copyPackerFiles() {
   RECONCILE_PRIVATE_HOSTS_DEST=/opt/azure/containers/reconcilePrivateHosts.sh
   KUBELET_SERVICE_SRC=/home/packer/kubelet.service
   KUBELET_SERVICE_DEST=/etc/systemd/system/kubelet.service
+  ULP_SH_SRC=/home/packer/ubuntu-live-patching.sh
+  ULP_SH_DEST=/opt/azure/containers/ubuntu-live-patching.sh
+  ULP_SERVICE_SRC=/home/packer/live-patching.service
+  ULP_SERVICE_DEST=/etc/systemd/system/live-patching.service
   VHD_CLEANUP_SCRIPT_SRC=/home/packer/cleanup-vhd.sh
   VHD_CLEANUP_SCRIPT_DEST=/opt/azure/containers/cleanup-vhd.sh
 
@@ -267,6 +271,8 @@ copyPackerFiles() {
     cpAndMode $NVIDIA_MODPROBE_SERVICE_SRC $NVIDIA_MODPROBE_SERVICE_DEST 644
     cpAndMode $PAM_D_COMMON_AUTH_SRC $PAM_D_COMMON_AUTH_DEST 644
     cpAndMode $PAM_D_COMMON_PASSWORD_SRC $PAM_D_COMMON_PASSWORD_DEST 644
+    cpAndMode $ULP_SH_SRC $ULP_SH_DEST 544
+    cpAndMode $ULP_SERVICE_SRC $ULP_SERVICE_DEST 644
   fi
   if [[ $OS == $MARINER_OS_NAME ]]; then
     cpAndMode $CONTAINERD_SERVICE_SRC $CONTAINERD_SERVICE_DEST 644
