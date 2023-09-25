@@ -1,9 +1,12 @@
 [Unit]
-Description=Bind mount kubelet data
+Description=Live Patching Service
+Wants=network-online.target
+After=network-online.target
+
 [Service]
-Restart=on-failure
-RemainAfterExit=yes
-ExecStart=/bin/bash /opt/azure/containers/bind-mount.sh
+Restart=always
+RestartSec=1800s
+ExecStart=/opt/azure/containers/ubuntu-live-patching.sh
 
 [Install]
 WantedBy=multi-user.target

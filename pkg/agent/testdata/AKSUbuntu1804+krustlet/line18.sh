@@ -93,6 +93,26 @@ apt_get_dist_upgrade() {
   echo Executed apt-get dist-upgrade $i times
   wait_for_apt_locks
 }
+apt_get_upgrade() {
+  retries=10
+  apt_upgrade_output=/tmp/apt-get-upgrade.out
+  for i in $(seq 1 $retries); do
+    wait_for_apt_locks
+    export DEBIAN_FRONTEND=noninteractive
+    dpkg --configure -a --force-confdef
+    apt-get -f -y install
+    apt-mark showhold
+    ! (apt-get -o Dpkg::Options::="--force-confnew" upgrade -y 2>&1 | tee $apt_upgrade_output | grep -E "^([WE]:.*)|([eE]rr.*)$") && \
+    cat $apt_upgrade_output && break || \
+    cat $apt_upgrade_output
+    if [ $i -eq $retries ]; then
+      return 1
+    else sleep 5
+    fi
+  done
+  echo Executed apt-get upgrade $i times
+  wait_for_apt_locks
+}
 installDebPackageFromFile() {
     DEB_FILE=$1
     wait_for_apt_locks

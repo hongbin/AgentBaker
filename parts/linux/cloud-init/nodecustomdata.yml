@@ -134,6 +134,20 @@ write_files:
   content: !!binary |
     {{GetVariableProperty "cloudInitData" "migPartitionScript"}}
 
+- path: /opt/azure/containers/ubuntu-live-patching.sh
+  permissions: "0544"
+  encoding: gzip
+  owner: root
+  content: !!binary |
+    {{GetVariableProperty "cloudInitData" "livePatchingScript"}}
+
+- path: /etc/systemd/system/live-patching.service
+  permissions: "0644"
+  encoding: gzip
+  owner: root
+  content: !!binary |
+    {{GetVariableProperty "cloudInitData" "livePatchingService"}}
+
 - path: /opt/azure/containers/bind-mount.sh
   permissions: "0544"
   encoding: gzip
